@@ -9,9 +9,20 @@ import com.geccocrawler.gecco.request.HttpRequest;
  *
  */
 public interface Scheduler {
-	
+
 	public HttpRequest out();
-	
+
 	public void into(HttpRequest request);
-	
+
+	/**
+	 * 调度器中是否还有待处理的请求。
+	 * 默认返回false以保持对自定义Scheduler的向后兼容；
+	 * 内置实现会给出准确结果，用于非循环模式的结束判定。
+	 *
+	 * @return true表示当前没有待处理请求
+	 */
+	default boolean isEmpty() {
+		return false;
+	}
+
 }

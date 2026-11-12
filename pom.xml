@@ -60,6 +60,12 @@
 			<artifactId>guava</artifactId>
 			<version>27.0.1-jre</version>
 		</dependency>
+		<dependency>
+			<groupId>junit</groupId>
+			<artifactId>junit</artifactId>
+			<version>4.13.2</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 	<build>
 		<pluginManagement>
@@ -76,8 +82,12 @@
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-surefire-plugin</artifactId>
+					<version>2.22.2</version>
 					<configuration>
-						<skip>true</skip>
+						<!-- 仅运行本地httptest回归，demo类依赖外网不作为单元测试执行 -->
+						<includes>
+							<include>**/dedup/*Test.java</include>
+						</includes>
 					</configuration>
 				</plugin>
 				<plugin>

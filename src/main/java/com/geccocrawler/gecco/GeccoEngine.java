@@ -30,7 +30,9 @@ import com.geccocrawler.gecco.request.HttpGetRequest;
 import com.geccocrawler.gecco.request.HttpRequest;
 import com.geccocrawler.gecco.request.StartRequestList;
 import com.geccocrawler.gecco.scheduler.NoLoopStartScheduler;
+import com.geccocrawler.gecco.scheduler.RunRequestBoundary;
 import com.geccocrawler.gecco.scheduler.Scheduler;
+import com.geccocrawler.gecco.scheduler.ShutdownableScheduler;
 import com.geccocrawler.gecco.scheduler.StartScheduler;
 import com.geccocrawler.gecco.spider.Spider;
 import com.geccocrawler.gecco.spider.SpiderBeanFactory;
@@ -52,6 +54,12 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 	private List<HttpRequest> startRequests = new ArrayList<HttpRequest>();
 
 	private Scheduler scheduler;
+
+	/**
+	 * 每次engine run建立的请求身份边界，保证同一次运行中相同GET URL只处理一次，
+	 * 不同run之间相互隔离
+	 */
+	private volatile RunRequestBoundary requestBoundary;
 
 	private SpiderBeanFactory spiderBeanFactory;
 
@@ -279,6 +287,8 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 		if (threadCount <= 0) {
 			threadCount = 1;
 		}
+		// 每次engine run建立独立的请求身份边界，多次run之间互不影响
+		this.requestBoundary = new RunRequestBoundary();
 		this.cdl = new CountDownLatch(threadCount);
 		startsJson();
 		if (startRequests.isEmpty()) {
@@ -302,8 +312,59 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 			// 启动导出jmx信息
 			GeccoJmx.export(jmxPrefix == null ? classpath : jmxPrefix);
 		}
+		if (!loop) {
+			// 非循环模式：所有请求处理完且各队列都安静下来后关闭start调度器，
+			// 唤醒等待中的Spider线程正常退出，避免线程永久自旋
+			startQuiescenceWatcher();
+		}
 		// 非循环模式等待线程执行完毕后关闭
 		closeUnitlComplete();
+	}
+
+	/**
+	 * 非循环模式的安静期监听：当身份边界中没有在途请求、start队列与所有Spider派生队列
+	 * 都为空时，关闭start调度器结束本次运行。
+	 */
+	private void startQuiescenceWatcher() {
+		Thread watcher = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				try {
+					while (!Thread.currentThread().isInterrupted()) {
+						Thread.sleep(100L);
+						if (isQuiescent()) {
+							// 再观察一个周期，防止请求在"完成"与"派生入队"之间的瞬间被误判
+							Thread.sleep(100L);
+							if (isQuiescent()) {
+								shutdownNoLoopScheduler();
+								return;
+							}
+						}
+					}
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}
+
+			private boolean isQuiescent() {
+				if (requestBoundary == null || requestBoundary.getInFlight() != 0) {
+					return false;
+				}
+				if (scheduler != null && !scheduler.isEmpty()) {
+					return false;
+				}
+				if (spiders != null) {
+					for (Spider spider : spiders) {
+						if (!spider.getSpiderScheduler().isEmpty()) {
+							return false;
+						}
+					}
+				}
+				return true;
+			}
+		}, "GeccoQuiescenceWatcher");
+		watcher.setDaemon(true);
+		watcher.start();
 	}
 
 	@Override
@@ -337,6 +398,16 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 		return scheduler;
 	}
 
+	/**
+	 * 获取本次运行的请求身份边界。边界在每次run()开始时重建，
+	 * 因此多次engine run之间的认领记录天然隔离。
+	 *
+	 * @return 当前运行的请求身份边界
+	 */
+	public RunRequestBoundary getRequestBoundary() {
+		return requestBoundary;
+	}
+
 	public SpiderBeanFactory getSpiderBeanFactory() {
 		return spiderBeanFactory;
 	}
@@ -367,6 +438,19 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 
 	public boolean isLoop() {
 		return loop;
+	}
+
+	/**
+	 * 非循环模式下，start调度器是否已经关闭。
+	 * 关闭后Spider线程拿到null即可安全退出，而不是继续等待新种子。
+	 *
+	 * @return true表示start调度器已关闭
+	 */
+	public boolean isStartSchedulerShutdown() {
+		if (scheduler instanceof ShutdownableScheduler) {
+			return ((ShutdownableScheduler) scheduler).isShutdown();
+		}
+		return false;
 	}
 
 	public Proxys getProxysLoader() {
@@ -480,7 +564,7 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 				spider.stop();
 			}
 		}
-		shutdownNoLoopScheduler();
+		shutdownScheduler();
 		if (eventListener != null) {
 			eventListener.onStop(this);
 		}
@@ -496,8 +580,17 @@ public class GeccoEngine<V> extends Thread implements Callable<V> {
 	}
 
 	private void shutdownNoLoopScheduler() {
-		if (!loop && scheduler instanceof NoLoopStartScheduler) {
-			((NoLoopStartScheduler) scheduler).shutdown();
+		if (!loop) {
+			shutdownScheduler();
+		}
+	}
+
+	/**
+	 * 关闭start调度器，唤醒可能在out()中等待的Spider线程使其感知停止信号
+	 */
+	private void shutdownScheduler() {
+		if (scheduler instanceof ShutdownableScheduler) {
+			((ShutdownableScheduler) scheduler).shutdown();
 		}
 	}
 

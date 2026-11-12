@@ -62,7 +62,12 @@ public class UniqueSpiderScheduler implements Scheduler {
 			log.error("not unique request : " + request.getUrl());
 		}
 	}
-	
+
+	@Override
+	public boolean isEmpty() {
+		return set.isEmpty();
+	}
+
 	private class SortHttpRequest {
 		
 		private long priority;

@@ -11,7 +11,7 @@ import com.geccocrawler.gecco.request.HttpRequest;
  * @author huchengyi
  *
  */
-public class NoLoopStartScheduler implements Scheduler {
+public class NoLoopStartScheduler implements ShutdownableScheduler {
 	
 	private ConcurrentLinkedQueue<HttpRequest> queue;
 	private final AtomicBoolean firstSeedArrived;
@@ -71,9 +71,20 @@ public class NoLoopStartScheduler implements Scheduler {
 		}
 	}
 
+	@Override
 	public void shutdown() {
 		shutdown = true;
 		notifyFirstSeed();
+	}
+
+	@Override
+	public boolean isShutdown() {
+		return shutdown;
+	}
+
+	@Override
+	public boolean isEmpty() {
+		return queue.isEmpty();
 	}
 
 }
